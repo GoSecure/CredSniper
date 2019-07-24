@@ -4,7 +4,7 @@ from os import system
 from core import functions
 from core.base_module import *
 import uuid
-import mechanicalsoup
+import requests
 import bs4
 import re, sys, time, random
 import time
@@ -58,8 +58,8 @@ class ExampleModule(BaseModule):
             geoip_url = 'https://freegeoip.net/json/{}'.format(
                 request.remote_addr
             )
-            geo_browser = mechanicalsoup.StatefulBrowser()
-            geo_response = geo_browser.open(geoip_url)
+            geo_session = requests.Session()
+            geo_response = geo_session.get(geoip_url)
             geo = json.loads(geo_response.text)
             city = geo['city']
             region = geo['region_name']
@@ -76,7 +76,9 @@ class ExampleModule(BaseModule):
             request.remote_addr,
             city,
             region,
-            zip_code
+            zip_code,
+            "",
+            ""
         )
         return redirect(self.final_url, code=302)
 

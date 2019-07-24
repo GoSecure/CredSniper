@@ -106,7 +106,7 @@ python_path=$(readlink -f ./bin/python)
 sudo setcap CAP_NET_BIND_SERVICE=+eip $python_path;
 
 echo "[*] Installing required Python modules..."
-source ./bin/activate; yes | pip -qq install flask mechanicalsoup pyopenssl
+source ./bin/activate; yes | pip -qq install flask requests pyopenssl
 
 case "$use_twofactor" in
     [yY][eE][sS]|[yY])

