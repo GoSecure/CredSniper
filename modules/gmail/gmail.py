@@ -10,7 +10,6 @@ import time
 import random
 import uuid
 import requests
-import bs4
 import json
 
 class GmailModule(BaseModule):

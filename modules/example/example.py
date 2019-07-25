@@ -5,7 +5,6 @@ from core import functions
 from core.base_module import *
 import uuid
 import requests
-import bs4
 import re, sys, time, random
 import time
 import json
